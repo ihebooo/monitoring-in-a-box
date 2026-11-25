@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: monitoring-in-a-box
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # The Docker host this stack runs on.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance: docker-host
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  # More Linux servers: install node_exporter on them and list them here, e.g.
+  # - job_name: node-remote
+  #   static_configs:
+  #     - targets: ["db1.example.com:9100", "192.0.2.10:9100"]

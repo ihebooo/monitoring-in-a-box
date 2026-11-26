@@ -1,0 +1,100 @@
+# Unit tests for prometheus/rules/postgresql.yml — run with:
+#   promtool test rules prometheus/tests/postgresql_test.yml
+rule_files:
+  - ../rules/postgresql.yml
+
+evaluation_interval: 15s
+
+tests:
+  - name: PostgreSQL down fires after 1m, not before
+    interval: 15s
+    input_series:
+      - series: 'pg_up{job="postgres", instance="demo"}'
+        values: '1 1 0x12'          # down from t=30s
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PostgreSQLDown
+        exp_alerts: []              # down 30s: still pending
+      - eval_time: 2m
+        alertname: PostgreSQLDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: postgres
+              instance: demo
+            exp_annotations:
+              summary: "PostgreSQL down on demo"
+              description: "postgres_exporter cannot connect to PostgreSQL. Check the service, its log and pg_hba.conf."
+
+  - name: exporter unreachable
+    interval: 15s
+    input_series:
+      - series: 'up{job="postgres", instance="demo"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PostgresExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: postgres
+              instance: demo
+            exp_annotations:
+              summary: "postgres_exporter unreachable on demo"
+              description: "Prometheus cannot scrape postgres_exporter. PostgreSQL health is unknown."
+
+  - name: replication lag only alerts on a standby
+    interval: 1m
+    input_series:
+      - series: 'pg_replication_lag_seconds{job="postgres", instance="standby"}'
+        values: '120x10'
+      - series: 'pg_replication_is_replica{job="postgres", instance="standby"}'
+        values: '1x10'
+      - series: 'pg_replication_lag_seconds{job="postgres", instance="primary"}'
+        values: '120x10'
+      - series: 'pg_replication_is_replica{job="postgres", instance="primary"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PostgreSQLReplicationLag
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: postgres
+              instance: standby
+            exp_annotations:
+              summary: "Replication lag on standby"
+              description: "Standby is 120s behind the primary (threshold 30s for 5m)."
+
+  - name: connections near max_connections
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{job="postgres", instance="demo", datname="app", state="active"}'
+        values: '50x10'
+      - series: 'pg_stat_activity_count{job="postgres", instance="demo", datname="app", state="idle"}'
+        values: '40x10'
+      - series: 'pg_settings_max_connections{job="postgres", instance="demo"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PostgreSQLTooManyConnections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: postgres
+              instance: demo
+            exp_annotations:
+              summary: "Connections near the limit on demo"
+              description: "90% of max_connections in use for 5m. Look for idle sessions or add a pooler (PgBouncer)."
+
+  - name: connections below the threshold stay quiet
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{job="postgres", instance="demo", datname="app", state="idle"}'
+        values: '70x10'
+      - series: 'pg_settings_max_connections{job="postgres", instance="demo"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PostgreSQLTooManyConnections
+        exp_alerts: []

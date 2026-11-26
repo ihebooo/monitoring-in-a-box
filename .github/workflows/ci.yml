@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh postgres/initdb/*.sh
       - name: check_targets.sh --help / bad options
         run: |
           ./scripts/check_targets.sh --help | grep -q '^Usage:'
@@ -31,6 +31,10 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "$PWD/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+      - name: promtool check rules + rule unit tests
+        run: |
+          docker run --rm --entrypoint promtool             -v "$PWD/prometheus:/etc/prometheus:ro"             prom/prometheus:v2.55.1 check rules /etc/prometheus/rules/postgresql.yml
+          docker run --rm --entrypoint promtool -w /etc/prometheus/tests             -v "$PWD/prometheus:/etc/prometheus:ro"             prom/prometheus:v2.55.1 test rules postgresql_test.yml
 
   stack:
     runs-on: ubuntu-latest
@@ -40,8 +44,26 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start the stack
         run: docker compose up -d && docker compose ps
-      - name: All Prometheus targets are up (prometheus, node, grafana)
-        run: ./scripts/check_targets.sh --timeout 120 --min 3
+      - name: All Prometheus targets are up (prometheus, node, grafana, postgres)
+        run: ./scripts/check_targets.sh --timeout 180 --min 4
+      - name: postgres_exporter connects to PostgreSQL and exposes the alert inputs
+        run: |
+          q() { curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode "query=$1"; }
+          ok=false
+          for _ in $(seq 1 45); do
+            if q 'pg_up{job="postgres"}' | jq -e '.data.result[0].value[1] == "1"' >/dev/null; then ok=true; break; fi
+            sleep 2
+          done
+          $ok || { echo "pg_up never reached 1"; q 'pg_up'; exit 1; }
+          # every metric the alert rules use must exist, or the alerts can never fire
+          for m in pg_settings_max_connections pg_stat_activity_count pg_replication_is_replica pg_replication_lag_seconds; do
+            n=$(q "count($m)" | jq -r '.data.result[0].value[1] // "0"')
+            echo "$m: $n series"; [ "$n" -gt 0 ]
+          done
+      - name: Alert rules are loaded and nothing is firing
+        run: |
+          curl -fsS http://localhost:9090/api/v1/rules             | jq -e '[.data.groups[] | select(.name == "postgresql") | .rules[] | select(.health == "ok")] | length == 4'
+          curl -fsS http://localhost:9090/api/v1/alerts             | jq -e '[.data.alerts[] | select(.state == "firing")] | length == 0'
       - name: node_exporter metrics reach Prometheus
         run: |
           curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode 'query=up{job="node"}' \

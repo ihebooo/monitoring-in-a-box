@@ -1,0 +1,44 @@
+groups:
+  - name: postgresql
+    rules:
+      # The exporter answers but cannot connect to PostgreSQL.
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL down on {{ $labels.instance }}"
+          description: "postgres_exporter cannot connect to PostgreSQL. Check the service, its log and pg_hba.conf."
+
+      # Prometheus cannot scrape the exporter at all: we are blind, not necessarily down.
+      - alert: PostgresExporterDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "postgres_exporter unreachable on {{ $labels.instance }}"
+          description: "Prometheus cannot scrape postgres_exporter. PostgreSQL health is unknown."
+
+      # Only meaningful on a standby: the exporter reports lag 0 on a primary.
+      - alert: PostgreSQLReplicationLag
+        expr: pg_replication_lag_seconds > 30 and pg_replication_is_replica == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replication lag on {{ $labels.instance }}"
+          description: "Standby is {{ printf \"%.0f\" $value }}s behind the primary (threshold 30s for 5m)."
+
+      # All backends (any state) against max_connections; superuser_reserved_connections included.
+      - alert: PostgreSQLTooManyConnections
+        expr: |
+          sum by (job, instance) (pg_stat_activity_count)
+            / max by (job, instance) (pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connections near the limit on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of max_connections in use for 5m. Look for idle sessions or add a pooler (PgBouncer)."

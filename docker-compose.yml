@@ -1,4 +1,4 @@
-# monitoring-in-a-box — Prometheus + node_exporter + Grafana
+# monitoring-in-a-box — Prometheus + node_exporter + Grafana + postgres_exporter (+ demo PostgreSQL)
 #
 #   cp .env.example .env      # set GRAFANA_ADMIN_PASSWORD
 #   docker compose up -d
@@ -53,6 +53,37 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # Demo database so the PostgreSQL alerts have something to watch. To monitor your own
+  # server instead, remove this service and point DATA_SOURCE_URI below at it.
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-demo-only-change-me}
+      PG_EXPORTER_PASSWORD: ${PG_EXPORTER_PASSWORD:-exporter-demo-only}
+    volumes:
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # TCP on purpose: during initdb the server only listens on the Unix socket
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    # not published: only postgres-exporter talks to it
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_URI: postgres:5432/postgres?sslmode=disable
+      DATA_SOURCE_USER: postgres_exporter        # pg_monitor role, see postgres/initdb/
+      DATA_SOURCE_PASS: ${PG_EXPORTER_PASSWORD:-exporter-demo-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   prometheus-data:
   grafana-data:
+  postgres-data:

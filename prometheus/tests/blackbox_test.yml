@@ -1,0 +1,93 @@
+# Unit tests for prometheus/rules/blackbox.yml — run with:
+#   promtool test rules prometheus/tests/blackbox_test.yml
+# In these tests time() starts at 0, so probe_ssl_earliest_cert_expiry = 864000 means
+# "expires 10 days after the test starts".
+rule_files:
+  - ../rules/blackbox.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: endpoint down fires after 2m, not before
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="blackbox-https", instance="https://shop.example.com"}'
+        values: '1 0x10'            # failing from t=1m
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EndpointDown
+        exp_alerts: []              # failing 1m: still pending
+      - eval_time: 4m
+        alertname: EndpointDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-https
+              instance: https://shop.example.com
+            exp_annotations:
+              summary: "HTTPS check failed for https://shop.example.com"
+              description: "Probe failing for 2m (DNS, TCP, TLS certificate or non-2xx status). Test with: curl -sSIv https://shop.example.com"
+
+  - name: blackbox_exporter unreachable
+    interval: 1m
+    input_series:
+      - series: 'up{job="blackbox-https", instance="https://shop.example.com"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: BlackboxExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: blackbox-https
+              instance: https://shop.example.com
+            exp_annotations:
+              summary: "blackbox_exporter unreachable while probing https://shop.example.com"
+              description: "Prometheus cannot scrape blackbox_exporter. HTTPS and certificate checks are blind."
+
+  - name: certificate with 10 days left is a warning, not critical
+    interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-https", instance="https://shop.example.com"}'
+        values: '864000x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TLSCertificateExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: blackbox-https
+              instance: https://shop.example.com
+            exp_annotations:
+              summary: "TLS certificate for https://shop.example.com expires in 10 days"
+              description: "Less than 21 days left. Check that automatic renewal works, or renew and deploy the certificate."
+      - eval_time: 15m
+        alertname: TLSCertificateExpiresVerySoon
+        exp_alerts: []
+
+  - name: certificate with 3 days left is critical
+    interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-https", instance="https://shop.example.com"}'
+        values: '259200x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TLSCertificateExpiresVerySoon
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-https
+              instance: https://shop.example.com
+            exp_annotations:
+              summary: "TLS certificate for https://shop.example.com expires in 3 days"
+              description: "Less than 7 days left. Renew and deploy the certificate now, then reload the web server."
+
+  - name: certificate with 60 days left stays quiet
+    interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-https", instance="https://shop.example.com"}'
+        values: '5184000x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TLSCertificateExpiringSoon
+        exp_alerts: []

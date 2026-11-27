@@ -33,8 +33,14 @@ jobs:
             prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
       - name: promtool check rules + rule unit tests
         run: |
-          docker run --rm --entrypoint promtool             -v "$PWD/prometheus:/etc/prometheus:ro"             prom/prometheus:v2.55.1 check rules /etc/prometheus/rules/postgresql.yml
-          docker run --rm --entrypoint promtool -w /etc/prometheus/tests             -v "$PWD/prometheus:/etc/prometheus:ro"             prom/prometheus:v2.55.1 test rules postgresql_test.yml
+          docker run --rm --entrypoint promtool -v "$PWD/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.55.1 check rules /etc/prometheus/rules/postgresql.yml /etc/prometheus/rules/blackbox.yml
+          docker run --rm --entrypoint promtool -w /etc/prometheus/tests -v "$PWD/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.55.1 test rules postgresql_test.yml blackbox_test.yml
+      - name: blackbox_exporter config is valid
+        run: |
+          docker run --rm -v "$PWD/blackbox:/etc/blackbox:ro" \
+            prom/blackbox-exporter:v0.25.0 --config.file=/etc/blackbox/blackbox.yml --config.check
 
   stack:
     runs-on: ubuntu-latest
@@ -44,8 +50,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start the stack
         run: docker compose up -d && docker compose ps
-      - name: All Prometheus targets are up (prometheus, node, grafana, postgres)
-        run: ./scripts/check_targets.sh --timeout 180 --min 4
+      - name: All Prometheus targets are up (prometheus, node, grafana, postgres, 2 HTTPS probes)
+        run: ./scripts/check_targets.sh --timeout 180 --min 6
       - name: postgres_exporter connects to PostgreSQL and exposes the alert inputs
         run: |
           q() { curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode "query=$1"; }
@@ -60,10 +66,30 @@ jobs:
             n=$(q "count($m)" | jq -r '.data.result[0].value[1] // "0"')
             echo "$m: $n series"; [ "$n" -gt 0 ]
           done
+      - name: blackbox_exporter probes the HTTPS targets and reports certificate expiry
+        run: |
+          q() { curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode "query=$1"; }
+          ok=false
+          for _ in $(seq 1 45); do
+            n=$(q 'count(probe_success{job="blackbox-https"} == 1)' | jq -r '.data.result[0].value[1] // "0"')
+            if [ "$n" -ge 2 ]; then ok=true; break; fi
+            sleep 2
+          done
+          $ok || { echo "HTTPS probes not successful"; q 'probe_success'; exit 1; }
+          q 'probe_http_status_code{job="blackbox-https"}' | jq -r '.data.result[] | "\(.metric.instance) HTTP \(.value[1])"'
+          # the certificate alerts depend on this metric; print days left per endpoint
+          q '(probe_ssl_earliest_cert_expiry{job="blackbox-https"} - time()) / 86400' \
+            | jq -e -r '.data.result | length == 2 and all(.[]; (.value[1] | tonumber) > 0)'
+          q 'round((probe_ssl_earliest_cert_expiry{job="blackbox-https"} - time()) / 86400)' \
+            | jq -r '.data.result[] | "\(.metric.instance) certificate: \(.value[1]) days left"'
       - name: Alert rules are loaded and nothing is firing
         run: |
-          curl -fsS http://localhost:9090/api/v1/rules             | jq -e '[.data.groups[] | select(.name == "postgresql") | .rules[] | select(.health == "ok")] | length == 4'
-          curl -fsS http://localhost:9090/api/v1/alerts             | jq -e '[.data.alerts[] | select(.state == "firing")] | length == 0'
+          for g in postgresql:4 blackbox:4; do
+            curl -fsS http://localhost:9090/api/v1/rules \
+              | jq -e --arg g "${g%:*}" --argjson n "${g#*:}" \
+                '[.data.groups[] | select(.name == $g) | .rules[] | select(.health == "ok")] | length == $n'
+          done
+          curl -fsS http://localhost:9090/api/v1/alerts | jq -e '[.data.alerts[] | select(.state == "firing")] | length == 0'
       - name: node_exporter metrics reach Prometheus
         run: |
           curl -fsS 'http://localhost:9090/api/v1/query' --data-urlencode 'query=up{job="node"}' \

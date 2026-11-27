@@ -1,0 +1,14 @@
+# blackbox_exporter modules. Prometheus picks the module per scrape job (params.module).
+modules:
+  # HTTPS endpoint must answer 2xx over a valid, trusted TLS certificate.
+  # An expired or untrusted certificate makes the probe fail (probe_success 0).
+  https_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: []          # empty = any 2xx
+      follow_redirects: true
+      fail_if_not_ssl: true           # plain http:// (or a redirect to it) is a failure
+      preferred_ip_protocol: ip4      # Docker networks are often IPv4-only
+      ip_protocol_fallback: true

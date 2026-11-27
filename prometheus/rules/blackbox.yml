@@ -1,0 +1,42 @@
+groups:
+  - name: blackbox
+    rules:
+      # DNS, TCP, TLS (expired / untrusted certificate) or HTTP status failed.
+      - alert: EndpointDown
+        expr: probe_success{job="blackbox-https"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTPS check failed for {{ $labels.instance }}"
+          description: "Probe failing for 2m (DNS, TCP, TLS certificate or non-2xx status). Test with: curl -sSIv {{ $labels.instance }}"
+
+      # Prometheus cannot reach blackbox_exporter, so the endpoint state is unknown.
+      - alert: BlackboxExporterDown
+        expr: up{job="blackbox-https"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "blackbox_exporter unreachable while probing {{ $labels.instance }}"
+          description: "Prometheus cannot scrape blackbox_exporter. HTTPS and certificate checks are blind."
+
+      # Days until the earliest certificate in the served chain expires.
+      # Automatic renewal (e.g. certbot) normally runs at 30 days left, so < 21 means it is not working.
+      - alert: TLSCertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-https"} - time()) / 86400 < 21
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires in {{ printf \"%.0f\" $value }} days"
+          description: "Less than 21 days left. Check that automatic renewal works, or renew and deploy the certificate."
+
+      - alert: TLSCertificateExpiresVerySoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-https"} - time()) / 86400 < 7
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires in {{ printf \"%.0f\" $value }} days"
+          description: "Less than 7 days left. Renew and deploy the certificate now, then reload the web server."

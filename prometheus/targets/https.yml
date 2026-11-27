@@ -1,0 +1,6 @@
+# HTTPS endpoints probed by blackbox_exporter (job "blackbox-https").
+# Prometheus re-reads this file on change: no reload needed. Replace the examples
+# with your own sites, APIs or internal services (the exporter must be able to reach them).
+- targets:
+    - https://example.com
+    - https://github.com

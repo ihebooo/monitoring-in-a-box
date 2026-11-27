@@ -30,6 +30,24 @@ scrape_configs:
         labels:
           instance: demo-postgres
 
+  # HTTPS endpoints: Prometheus asks blackbox_exporter to probe each URL listed in
+  # targets/https.yml. "instance" becomes the URL; the scrape goes to the exporter.
+  - job_name: blackbox-https
+    metrics_path: /probe
+    params:
+      module: [https_2xx]
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    file_sd_configs:
+      - files: ["targets/https.yml"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
   # More Linux servers: install node_exporter on them and list them here, e.g.
   # - job_name: node-remote
   #   static_configs:
